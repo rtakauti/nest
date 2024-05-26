@@ -1,0 +1,29 @@
+version: 2
+updates:
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: daily
+      time: '08:00'
+    open-pull-requests-limit: 15
+    versioning-strategy: increase
+    ignore:
+      - dependency-name: '@types/jest'
+        versions:
+          - '28.x'
+      - dependency-name: 'ts-jest'
+        versions:
+          - '28.x'
+      - dependency-name: 'jest'
+        versions:
+          - '28.x'
+      - dependency-name: '@fastify/helmet'
+        versions:
+          - '9.x'
+
+  - package-ecosystem: 'docker'
+    directory: '/'
+    schedule:
+      interval: daily
+      time: '08:00'
+    open-pull-requests-limit: 10

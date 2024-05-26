@@ -1,0 +1,299 @@
+trigger:
+  branches:
+    include:
+      - develop 
+      - main
+  paths:
+    exclude:
+      - README.md
+
+resources:
+  repositories:
+    - repository: k8s_manifests
+      type: github
+      endpoint: grupoboticario
+      name: grupoboticario/kubernetes-manifests
+      ref: refs/heads/gcp-pipeline
+    - repository: pipeline_templates
+      type: github
+      endpoint: grupoboticario
+      name: grupoboticario/pipeline-templates
+      ref: refs/heads/feature/apigee
+    - repository: iac_scripts
+      type: github
+      endpoint: grupoboticario
+      name: grupoboticario/iac-scripts
+      ref: refs/heads/feature/apigee
+    - repository: integration_platform_gcp_infrastructure
+      type: github
+      endpoint: grupoboticario
+      name: grupoboticario/integration-platform-gcp-infrastructure
+      ref: refs/heads/noderfc_image
+
+variables:
+  configuration.sonar.organization: 'gboticario'
+  configuration.containerRegistry.buildTag: v$(Build.BuildNumber)-ci
+  configuration.containerRegistry.name: 'gcp-docker-registry-SupplyDemandMultiCTE'
+  configuration.sonar.serviceConnection: 'SonarCloud-GBoticario-SupplyDemandMultiCTE'
+  configuration.kubernetes.serviceConnection.dev: 'GKE-DEV-supply-demand-1654015412904'
+  configuration.kubernetes.serviceConnection.hml: 'GKE-HML-supply-demand-1654015453074'
+  configuration.kubernetes.serviceConnection.prd: 'GKE-PRD-supply-demand-1654015488773'
+
+pool:
+  vmImage: 'ubuntu-20.04'
+
+stages:
+  - stage: CI
+    variables:
+      - group: API-REST-CI
+      - group: K8S-API-REST
+    jobs:
+      - job: Build
+        displayName: Build and Test
+        steps:
+          - checkout: self
+          - checkout: integration_platform_gcp_infrastructure
+          - template: /template-sapsetup.yaml@integration_platform_gcp_infrastructure
+            parameters:
+              githubRepository: multicte-outbound
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '14.x'
+
+          - task: Cache@2
+            displayName: Cache node modules
+            inputs:
+              key: 'node-ci | "$(Agent.OS)" | package-lock.json'
+              restoreKeys: |
+                node-ci | "$(Agent.OS)"
+                node-ci
+              path: $(System.DefaultWorkingDirectory)/node_modules
+
+          - task: SonarCloudPrepare@1
+            displayName: Sonar Prepare
+            condition: ne(variables['Build.Reason'], 'PullRequest')
+            inputs:
+              SonarCloud: '$(configuration.sonar.serviceConnection)'
+              organization: '$(configuration.sonar.organization)'
+              scannerMode: 'CLI'
+              configMode: 'manual'
+              cliProjectKey: '$(SONAR_PROJECT_KEY)'
+              cliProjectName: '$(SONAR_PROJECT_NAME)'
+              cliProjectVersion: '$(Build.BuildNumber)'
+              cliSources: './src'
+              extraProperties: |
+                sonar.branch.name=$(Build.SourceBranchName)
+                sonar.language=ts
+                sonar.sources=src
+                sonar.sourceEncoding=UTF-8
+                sonar.typescript.tsconfigPath=tsconfig.json
+                sonar.exclusions=src/**/*.spec.ts, src/**/*.mock.ts, src/**/*.module.ts
+                sonar.cpd.exclusions=src/**/*.spec.ts,src/**/*.mock.ts,build/*,test/*,node_modules/*,coverage/lcov-report/*
+                sonar.test.inclusions=src/**/*.spec.ts
+                sonar.coverage.exclusions=src/**/*.spec.ts,src/**/*.mock.ts,src/**/*.module.ts,build/*,test/*,node_modules/*,coverage/lcov-report/*
+                sonar.typescript.lcov.reportPaths=coverage/lcov.info
+                sonar.javascript.lcov.reportPaths=coverage/lcov.info
+
+          - task: SonarCloudPrepare@1
+            displayName: Sonar Prepare - PR
+            condition: eq(variables['Build.Reason'], 'PullRequest')
+            inputs:
+              SonarCloud: '$(configuration.sonar.serviceConnection)'
+              organization: '$(configuration.sonar.organization)'
+              scannerMode: 'CLI'
+              configMode: 'manual'
+              cliProjectKey: '$(SONAR_PROJECT_KEY)'
+              cliProjectName: '$(SONAR_PROJECT_NAME)'
+              cliProjectVersion: '$(Build.BuildNumber)'
+              cliSources: './src'
+              extraProperties: |
+                sonar.pullrequest.key=$(System.PullRequest.PullRequestNumber)
+                sonar.pullrequest.branch=$(System.PullRequest.SourceBranch)
+                sonar.pullrequest.base=$(System.PullRequest.TargetBranch)
+                sonar.language=ts
+                sonar.sources=src
+                sonar.sourceEncoding=UTF-8
+                sonar.typescript.tsconfigPath=tsconfig.json
+                sonar.exclusions=src/**/*.spec.ts, src/**/*.mock.ts, src/**/*.module.ts
+                sonar.cpd.exclusions=src/**/*.spec.ts,src/**/*.mock.ts,build/*,test/*,node_modules/*,coverage/lcov-report/*
+                sonar.test.inclusions=src/**/*.spec.ts
+                sonar.coverage.exclusions=src/**/*.spec.ts,src/**/*.mock.ts,src/**/*.module.ts,build/*,test/*,node_modules/*,coverage/lcov-report/*
+                sonar.typescript.lcov.reportPaths=coverage/lcov.info
+                sonar.javascript.lcov.reportPaths=coverage/lcov.info
+
+          - task: replacetokens@3
+            inputs:
+              targetFiles: '**/*.json'
+              encoding: 'auto'
+              writeBOM: true
+              actionOnMissing: 'warn'
+              keepToken: false
+              tokenPrefix: '${'
+              tokenSuffix: '}'
+              useLegacyPattern: false
+              enableTelemetry: true
+
+          - script: npm install
+            displayName: Npm Install
+
+          - script: npm run build
+            displayName: 'npm run build'
+
+          - script: TZ=America/Sao_Paulo npm run test:cov
+            displayName: 'unit test'
+
+          - task: SonarCloudAnalyze@1
+            displayName: Sonar Analyze
+
+          - task: SonarCloudPublish@1
+            displayName: Sonar Publish
+
+          - task: Docker@0
+            displayName: 'Docker'
+            condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+            inputs:
+              containerregistrytype: 'Container Registry'
+              dockerRegistryConnection: '$(configuration.containerRegistry.name)'
+              imageName: '$(GCP_REGISTER_NAME)/$(IMAGE_NAME)'
+              additionalImageTags: '$(configuration.containerRegistry.buildTag)'
+
+          - task: Docker@0
+            displayName: 'Push Image'
+            condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+            inputs:
+              containerregistrytype: 'Container Registry'
+              dockerRegistryConnection: '$(configuration.containerRegistry.name)'
+              action: 'Push an image'
+              imageName: '$(GCP_REGISTER_NAME)/$(IMAGE_NAME)'
+              additionalImageTags: '$(configuration.containerRegistry.buildTag)'
+
+  - stage: CD_DEV
+    displayName: CD - DEV
+    dependsOn:
+      - CI
+    condition: and(succeeded('CI'), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - deployment: Deploy_K8S_API
+        displayName: Deploy API
+        environment: GKE-DEV
+        variables:
+          - group: K8S
+          - group: K8S-DEV
+          - group: K8S-API-REST
+          - group: K8S-API-REST-DEV
+          - group: API-REST-DEV
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: iac_scripts
+                - checkout: k8s_manifests
+                - checkout: pipeline_templates
+                - template: /K8S/K8S.yaml@pipeline_templates
+                  parameters:
+                    kubernetesServiceConnection: $(configuration.kubernetes.serviceConnection.dev)
+                    cloudProvider: gcp
+                    namespace: $(NAMESPACE)
+                    environment: dev
+                    host: $(HOST)
+                    variableGroupApp: 'API-REST-DEV'
+                    nrApiKey: $(NEW_RELIC_API_KEY)
+                    nrAppId: $(NEW_RELIC_APP_ID)
+                    nrVersion: 'v$(Build.BuildNumber)'
+                    imageName: '$(GCP_REGISTER_NAME)/$(IMAGE_NAME)'
+                - template: /Route53/Route53.yaml@pipeline_templates
+                  parameters:
+                    changeBatchJson: ./r53-k8s-ingress-cname.json
+
+  - stage: CD_HML
+    displayName: CD - HML
+    dependsOn:
+      - CD_DEV
+    condition: and(succeeded('CD_DEV'), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - deployment: Deploy_K8S_API
+        displayName: Deploy API
+        environment: GKE-HML
+        variables:
+          - group: K8S
+          - group: K8S-HML
+          - group: K8S-API-REST
+          - group: K8S-API-REST-HML
+          - group: API-REST-HML
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: iac_scripts
+                - checkout: k8s_manifests
+                - checkout: pipeline_templates
+                - template: /K8S/K8S.yaml@pipeline_templates
+                  parameters:
+                    kubernetesServiceConnection: $(configuration.kubernetes.serviceConnection.hml)
+                    cloudProvider: gcp
+                    namespace: $(NAMESPACE)
+                    environment: hml
+                    host: $(HOST)
+                    variableGroupApp: 'API-REST-HML'
+                    nrApiKey: $(NEW_RELIC_API_KEY)
+                    nrAppId: $(NEW_RELIC_APP_ID)
+                    nrVersion: 'v$(Build.BuildNumber)'
+                    imageName: '$(GCP_REGISTER_NAME)/$(IMAGE_NAME)'
+                - template: /Route53/Route53.yaml@pipeline_templates
+                  parameters:
+                    changeBatchJson: ./r53-k8s-ingress-cname.json
+
+  - stage: CD_PRD
+    displayName: CD - PRD
+    dependsOn:
+      - CD_HML
+    condition: and(succeeded('CD_HML'), ne(variables['Build.Reason'], 'PullRequest'),eq(variables['Build.SourceBranchName'], 'main'))
+    jobs:
+      - job: ManualValidation
+        displayName: Execução manual do deploy em PRD.
+        pool: server
+        timeoutInMinutes: '4320' # job times out in 3 days
+        steps:
+          - task: ManualValidation@0
+            timeoutInMinutes: 1440 # task times out in 1 day
+            inputs:
+              notifyUsers: |
+                G_TI_Arq_Integracoes@grupoboticario.com.br
+                robson.toledo@grupoboticario.com.br
+              instructions: 'Por favor revise a implementação que será feita'
+              onTimeout: 'resume'
+
+      - deployment: Deploy_K8S_API
+        dependsOn: ManualValidation
+        condition: and(succeeded('ManualValidation'), ne(variables['Build.Reason'], 'PullRequest'))
+        displayName: Deploy API
+        environment: GKE-PRD
+        variables:
+          - group: K8S
+          - group: K8S-PRD
+          - group: K8S-API-REST
+          - group: K8S-API-REST-PRD
+          - group: API-REST-PRD
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: iac_scripts
+                - checkout: k8s_manifests
+                - checkout: pipeline_templates
+                - template: /K8S/K8S.yaml@pipeline_templates
+                  parameters:
+                    kubernetesServiceConnection: $(configuration.kubernetes.serviceConnection.prd)
+                    cloudProvider: gcp
+                    namespace: $(NAMESPACE)
+                    environment: prd
+                    host: $(HOST)
+                    variableGroupApp: 'API-REST-PRD'
+                    nrApiKey: $(NEW_RELIC_API_KEY)
+                    nrAppId: $(NEW_RELIC_APP_ID)
+                    nrVersion: 'v$(Build.BuildNumber)'
+                    imageName: '$(GCP_REGISTER_NAME)/$(IMAGE_NAME)'
+                - template: /Route53/Route53.yaml@pipeline_templates
+                  parameters:
+                    changeBatchJson: ./r53-k8s-ingress-cname.json
+

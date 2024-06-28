@@ -63,7 +63,7 @@
     "@nestjs/testing": "^8.4.4",
     "@types/cli-color": "^2.0.2",
     "@types/jest": "^27.5.1",
-    "@types/lodash": "^4.14.202",
+    "@types/lodash": "^4.17.6",
     "@types/newrelic": "^7.0.3",
     "@types/node": "^20.5.9",
     "@types/supertest": "^2.0.12",

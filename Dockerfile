@@ -13,7 +13,7 @@
 # https://www.bretfisher.com/node-docker-good-defaults/
 # http://goldbergyoni.com/checklist-best-practice-of-node-js-in-production/
 
-FROM node:21 AS builder
+FROM node:26 AS builder
 
 ENV NODE_ENV=build
 
